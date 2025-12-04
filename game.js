@@ -35,12 +35,12 @@ const CONFIG = {
 };
 
 const CARDS = {
-    knight: { id: 'knight', name: 'Knight', cost: 3, type: 'troop', color: CONFIG.COLORS.KNIGHT, speed: 60, health: 1000, damage: 150, attackSpeed: 1.2, range: 0, radius: 12, targets: 'ground' }, 
-    giant: { id: 'giant', name: 'Giant', cost: 5, type: 'troop', color: CONFIG.COLORS.GIANT, speed: 40, health: 3000, damage: 200, attackSpeed: 1.5, range: 0, radius: 18, targets: 'buildings' },   
-    pekka: { id: 'pekka', name: 'P.E.K.K.A', cost: 7, type: 'troop', color: CONFIG.COLORS.PEKKA, speed: 35, health: 2500, damage: 600, attackSpeed: 1.8, range: 0, radius: 15, targets: 'ground' },
-    archers: { id: 'archers', name: 'Archers', cost: 3, type: 'troop', color: CONFIG.COLORS.ARCHER, speed: 70, health: 300, damage: 80, attackSpeed: 1.0, range: 120, radius: 10, targets: 'all', projectileSpeed: 300 },
+    knight: { id: 'knight', name: 'Knight', cost: 3, type: 'troop', color: CONFIG.COLORS.KNIGHT, speed: 60, health: 1000, damage: 150, attackSpeed: 1.2, range: 30, radius: 12, targets: 'ground', sightRange: 140 }, 
+    giant: { id: 'giant', name: 'Giant', cost: 5, type: 'troop', color: CONFIG.COLORS.GIANT, speed: 40, health: 3000, damage: 200, attackSpeed: 1.5, range: 30, radius: 18, targets: 'buildings', sightRange: 140 },   
+    pekka: { id: 'pekka', name: 'P.E.K.K.A', cost: 7, type: 'troop', color: CONFIG.COLORS.PEKKA, speed: 35, health: 2500, damage: 600, attackSpeed: 1.8, range: 30, radius: 15, targets: 'ground', sightRange: 140 },
+    archers: { id: 'archers', name: 'Archers', cost: 3, type: 'troop', color: CONFIG.COLORS.ARCHER, speed: 70, health: 300, damage: 80, attackSpeed: 1.0, range: 120, radius: 10, targets: 'all', projectileSpeed: 300, sightRange: 160 },
     arrows: { id: 'arrows', name: 'Arrows', cost: 3, type: 'spell', color: CONFIG.COLORS.ARROW, radius: 80, damage: 200, projectileSpeed: 400 },  
-    cannon: { id: 'cannon', name: 'Cannon', cost: 3, type: 'building', color: CONFIG.COLORS.CANNON, health: 800, radius: 20, range: 150, damage: 100, attackSpeed: 0.8, targets: 'ground', projectileSpeed: 400 }
+    cannon: { id: 'cannon', name: 'Cannon', cost: 3, type: 'building', color: CONFIG.COLORS.CANNON, health: 800, radius: 20, range: 150, damage: 100, attackSpeed: 0.8, targets: 'ground', projectileSpeed: 400, sightRange: 140 }
 };
 
 class Particle {
@@ -203,6 +203,7 @@ class Tower extends Entity {
             this.range = 200;
             this.damage = 80;
             this.attackSpeed = 0.8;
+            this.active = true; // Princess towers always active
         } else {
             this.width = CONFIG.KING_TOWER_SIZE;
             this.height = CONFIG.KING_TOWER_SIZE;
@@ -211,14 +212,29 @@ class Tower extends Entity {
             this.range = 220;
             this.damage = 100;
             this.attackSpeed = 1.0;
+            this.active = false; // King starts inactive
         }
         this.maxHealth = this.health;
         this.color = team === 'player' ? CONFIG.COLORS.PLAYER_TOWER : CONFIG.COLORS.ENEMY_TOWER;
         this.attackTimer = 0;
         this.currentTarget = null;
     }
+    
+    takeDamage(amount, gameState) {
+        super.takeDamage(amount, gameState);
+        // King activation on damage
+        if (this.towerType === 'king' && !this.active) {
+            this.active = true;
+            gameState.addFloatingText(this.x, this.y - 40, "ACTIVATED!");
+        }
+    }
+
     update(dt, gameState) {
         super.update(dt, gameState);
+        
+        // Only attack if active
+        if (!this.active) return;
+
         this.attackTimer -= dt / 1000;
         if (!this.currentTarget || this.currentTarget.isDead || this.getDist(this.currentTarget) > this.range) {
             this.currentTarget = this.findTarget(gameState);
@@ -271,6 +287,8 @@ class Unit extends Entity {
         this.mass = stats.radius; 
         this.targetType = stats.targets;
         this.projectileSpeed = stats.projectileSpeed;
+        this.sightRange = stats.sightRange || 140; // Default sight range
+
         this.state = 'MOVING';
         this.currentTarget = null;
         this.attackTimer = 0;
@@ -280,10 +298,27 @@ class Unit extends Entity {
         super.update(dt, gameState);
         this.applyPhysics(dt);
         this.attackTimer -= dt / 1000;
+
+        // 1. Check for Retargeting (Distraction)
+        // If we are currently targeting a Building/Tower, but we prefer Troops, 
+        // check if a Troop has entered our aggro range.
+        if (this.currentTarget && !this.currentTarget.isDead && this.targetType !== 'buildings') {
+            // Only retarget if we are currently locked on a building/tower
+            if (this.currentTarget.type === 'tower' || this.currentTarget.cardId === 'cannon') {
+                const betterTarget = this.findTarget(gameState);
+                // If findTarget returns a Unit, it means a unit is in aggro range (priority)
+                if (betterTarget && betterTarget.type === 'unit' && betterTarget !== this.currentTarget) {
+                    this.currentTarget = betterTarget;
+                }
+            }
+        }
+
+        // 2. Find initial target if none
         if (!this.currentTarget || this.currentTarget.isDead) {
             this.currentTarget = this.findTarget(gameState);
             this.state = 'MOVING';
         }
+
         if (this.currentTarget) {
             const dist = this.getDist(this.currentTarget);
             const rangeBuffer = this.radius + (this.currentTarget.radius || 20) + this.range;
@@ -292,6 +327,7 @@ class Unit extends Entity {
         } else {
             this.state = 'IDLE'; 
         }
+
         if (this.state === 'MOVING') this.move(dt, gameState);
         else if (this.state === 'ATTACKING') {
             if (this.attackTimer <= 0) {
@@ -299,20 +335,86 @@ class Unit extends Entity {
                 this.attackTimer = this.attackSpeed;
             }
         }
+        
+        // Final Constraint Check
+        this.constrainPosition();
     }
+    
+    constrainPosition() {
+        const riverY = CONFIG.GAME_HEIGHT / 2;
+        const riverHalfHeight = 20; // 40px total river height
+        const bridgeWidth = 40;
+        
+        // If inside river Y-band
+        if (this.y > riverY - riverHalfHeight && this.y < riverY + riverHalfHeight) {
+            const bridgeLeftX = CONFIG.GAME_WIDTH * 0.25;
+            const bridgeRightX = CONFIG.GAME_WIDTH * 0.75;
+            
+            // Check if on bridge (X-axis) with slight buffer
+            const onLeftBridge = (this.x >= bridgeLeftX - bridgeWidth/2 && this.x <= bridgeLeftX + bridgeWidth/2);
+            const onRightBridge = (this.x >= bridgeRightX - bridgeWidth/2 && this.x <= bridgeRightX + bridgeWidth/2);
+            
+            if (!onLeftBridge && !onRightBridge) {
+                // Push out of river!
+                const distToTop = Math.abs(this.y - (riverY - riverHalfHeight));
+                const distToBottom = Math.abs(this.y - (riverY + riverHalfHeight));
+                
+                if (distToTop < distToBottom) {
+                    this.y = riverY - riverHalfHeight - 1; // Push to Top Bank
+                } else {
+                    this.y = riverY + riverHalfHeight + 1; // Push to Bottom Bank
+                }
+            }
+        }
+        
+        // Screen Bounds (Optional but good)
+        this.x = Math.max(this.radius, Math.min(CONFIG.GAME_WIDTH - this.radius, this.x));
+        this.y = Math.max(this.radius, Math.min(CONFIG.GAME_HEIGHT - this.radius, this.y));
+    }
+
     getDist(target) {
         const dx = target.x - this.x;
         const dy = target.y - this.y;
         return Math.sqrt(dx*dx + dy*dy);
     }
+
     findTarget(gameState) {
-        let candidates = gameState.entities.filter(e => {
-            if (e.team === this.team || e.isDead || e.type === 'projectile') return false;
-            if (this.targetType === 'buildings' && e.type !== 'tower' && e.cardId !== 'cannon') return false;
+        // 1. Filter potential targets based on basic rules
+        let targets = gameState.entities.filter(e => {
+            if (e.team === this.team || e.isDead || e.type === 'projectile' || e.type === 'spell_projectile') return false;
             return true;
         });
-        candidates.sort((a, b) => this.getDist(a) - this.getDist(b));
-        return candidates[0] || null;
+
+        // 2. Specific targeting logic
+        if (this.targetType === 'buildings') {
+            // GIANT Logic: Prioritize Buildings (Cannon) -> Towers
+            // Filter for buildings/towers only
+            let buildings = targets.filter(e => e.type === 'tower' || e.cardId === 'cannon');
+            
+            if (buildings.length === 0) return null;
+
+            // Sort by distance
+            buildings.sort((a, b) => this.getDist(a) - this.getDist(b));
+            
+            return buildings[0];
+        } else {
+            // KNIGHT/PEKKA/ARCHER Logic: Prioritize Troops -> Buildings
+            // Use Unit's specific sight range
+            const aggro = this.sightRange; 
+
+            let enemyTroops = targets.filter(e => e.type === 'unit' && this.getDist(e) <= aggro);
+            
+            if (enemyTroops.length > 0) {
+                // Found troops nearby! Attack closest troop.
+                enemyTroops.sort((a, b) => this.getDist(a) - this.getDist(b));
+                return enemyTroops[0];
+            } else {
+                // No troops nearby. Find nearest Building/Tower to siege.
+                let buildings = targets.filter(e => e.type === 'tower' || e.cardId === 'cannon');
+                buildings.sort((a, b) => this.getDist(a) - this.getDist(b));
+                return buildings[0];
+            }
+        }
     }
     attack(gameState) {
         if (!this.currentTarget) return;
@@ -329,26 +431,23 @@ class Unit extends Entity {
         const riverY = CONFIG.GAME_HEIGHT / 2;
         const isPlayer = this.team === 'player';
         
-        // Check River Collision
-        const riverTop = riverY - 20;
-        const riverBottom = riverY + 20;
-        
-        // Bridge Zones (allow crossing here)
-        const bridgeWidth = 40;
-        const bridgeLeftX = (CONFIG.GAME_WIDTH * 0.25);
-        const bridgeRightX = (CONFIG.GAME_WIDTH * 0.75);
-        
-        const inLeftBridge = (this.x > bridgeLeftX - bridgeWidth/2 && this.x < bridgeLeftX + bridgeWidth/2);
-        const inRightBridge = (this.x > bridgeRightX - bridgeWidth/2 && this.x < bridgeRightX + bridgeWidth/2);
-        const onBridge = inLeftBridge || inRightBridge;
-
+        // Determine if we need to use the bridge
+        // Logic: If I am on one side, and target (or base) is on other, MUST use bridge.
         let useBridge = false;
+        
+        let targetYToCheck = 0;
         if (this.currentTarget) {
-            const mySide = (this.y > riverY) ? 'bottom' : 'top';
-            const targetSide = (this.currentTarget.y > riverY) ? 'bottom' : 'top';
-            if (mySide !== targetSide) useBridge = true;
+            targetYToCheck = this.currentTarget.y;
         } else {
-             useBridge = isPlayer ? (this.y > riverY) : (this.y < riverY);
+            // Default target is enemy base edge
+            targetYToCheck = isPlayer ? 0 : CONFIG.GAME_HEIGHT;
+        }
+
+        const mySide = (this.y > riverY) ? 'bottom' : 'top';
+        const targetSide = (targetYToCheck > riverY) ? 'bottom' : 'top';
+        
+        if (mySide !== targetSide) {
+            useBridge = true;
         }
 
         if (useBridge) {
@@ -359,30 +458,35 @@ class Unit extends Entity {
             // Distance to center of river
             const distToRiverY = Math.abs(this.y - riverY);
 
-            if (distToRiverY < 40) {
-                 // Near/On river. 
-                 if (onBridge) {
-                    // Safe to cross
-                    if (this.currentTarget) {
-                        tx = this.currentTarget.x;
-                        ty = this.currentTarget.y;
-                    } else {
-                        tx = bridge.x;
-                        ty = isPlayer ? 0 : CONFIG.GAME_HEIGHT; 
-                    }
-                 } else {
-                    // Near river but NOT on bridge. Must funnel to bridge.
-                    tx = bridge.x;
-                    ty = bridge.y; 
-                 }
+            // "Crossing Zone" Logic
+            // If we are anywhere near the river (60px buffer), we MUST align with the bridge 
+            // and walk straight across. We ignore the specific target X/Y until we are clear.
+            if (distToRiverY < 60) {
+                tx = bridge.x; // Force X alignment with bridge
+                
+                // Force movement towards the other side
+                if (isPlayer) {
+                    // Move UP (negative Y)
+                    ty = riverY - 100; // Way past river
+                } else {
+                    // Move DOWN (positive Y)
+                    ty = riverY + 100; // Way past river
+                }
             } else {
+                // Not near river yet, just walk towards the bridge entrance
                 tx = bridge.x;
                 ty = bridge.y; 
             }
         } else {
+            // Same side? Go straight to target.
             if (this.currentTarget) {
                 tx = this.currentTarget.x;
                 ty = this.currentTarget.y;
+            } else {
+                // Fallback default move (e.g. after crossing bridge and killing target)
+                // Aim for King Tower if no target
+                tx = (this.lane === 0) ? CONFIG.GAME_WIDTH * 0.25 : CONFIG.GAME_WIDTH * 0.75;
+                ty = isPlayer ? 0 : CONFIG.GAME_HEIGHT;
             }
         }
         
@@ -392,26 +496,13 @@ class Unit extends Entity {
         
         if (dist > 1) {
             const moveDist = this.speed * (dt / 1000);
-            let nextX = this.x + (dx / dist) * moveDist;
-            let nextY = this.y + (dy / dist) * moveDist;
-
-            // Hard River Stop
-            // If trying to step INTO river while NOT on bridge X, stop Y movement
-            const nextOnBridge = (nextX > bridgeLeftX - bridgeWidth/2 && nextX < bridgeLeftX + bridgeWidth/2) || 
-                                 (nextX > bridgeRightX - bridgeWidth/2 && nextX < bridgeRightX + bridgeWidth/2);
-            
-            if (!nextOnBridge && nextY > riverTop && nextY < riverBottom) {
-                // Block Y movement if entering river zone
-                // Allow X movement to slide towards bridge
-                nextY = this.y; 
-            }
-            
-            this.x = nextX;
-            this.y = nextY;
+            this.x += (dx / dist) * moveDist;
+            this.y += (dy / dist) * moveDist;
         }
     }
 }
 
+// ... (Rest of the file remains unchanged, effectively)
 class PlayerManager {
     constructor(team, isHuman = false, gameState) {
         this.team = team;
@@ -571,6 +662,20 @@ class GameState {
         this.entities.forEach(ent => ent.update(dt, this));
         this.particles.forEach(p => p.update(dt));
         this.floatingTexts.forEach(t => t.update(dt));
+
+        // Check King Activation via Princess Death
+        const enemyPrincessCount = this.entities.filter(e => e.team === 'enemy' && e.type === 'tower' && e.towerType === 'princess').length;
+        const playerPrincessCount = this.entities.filter(e => e.team === 'player' && e.type === 'tower' && e.towerType === 'princess').length;
+
+        if (enemyPrincessCount < 2) {
+            const k = this.entities.find(e => e.id === 'e_k_1');
+            if (k && !k.active) { k.active = true; this.addFloatingText(k.x, k.y - 40, "ACTIVATED!"); }
+        }
+        if (playerPrincessCount < 2) {
+            const k = this.entities.find(e => e.id === 'p_k_1');
+            if (k && !k.active) { k.active = true; this.addFloatingText(k.x, k.y - 40, "ACTIVATED!"); }
+        }
+
         this.resolveCollisions();
         this.checkWinCondition();
         this.entities = this.entities.filter(e => !e.isDead);
@@ -641,32 +746,20 @@ class GameState {
         const cardId = manager.hand[cardIndex];
         const cardDef = CARDS[cardId];
         const isPlayer = playerId === 'player';
-        
-        // Pocket Logic
         let validPlacement = true;
         if (cardDef.type !== 'spell') {
             const riverY = CONFIG.GAME_HEIGHT / 2;
             const baseValid = isPlayer ? (y > riverY) : (y < riverY);
-            
             if (baseValid) {
                 validPlacement = true;
             } else {
-                // Check Pocket
-                // Is there a destroyed enemy princess tower?
                 if (isPlayer) {
-                    // Player attacking Enemy. Check Enemy Princesses (Top)
                     const leftAlive = this.entities.some(e => e.id === 'e_p_1' && !e.isDead);
                     const rightAlive = this.entities.some(e => e.id === 'e_p_2' && !e.isDead);
-                    
-                    // If left is dead, can spawn left side up to a limit
-                    // Simplified: Just check X/Y
                     if (!leftAlive && x < CONFIG.GAME_WIDTH/2 && y > 100) validPlacement = true;
                     else if (!rightAlive && x > CONFIG.GAME_WIDTH/2 && y > 100) validPlacement = true;
                     else validPlacement = false;
-
                 } else {
-                    // Enemy attacking Player (Bottom)
-                    // Simplified AI doesn't use pocket yet really, but logic stands
                     const leftAlive = this.entities.some(e => e.id === 'p_p_1' && !e.isDead);
                     const rightAlive = this.entities.some(e => e.id === 'p_p_2' && !e.isDead);
                      if (!leftAlive && x < CONFIG.GAME_WIDTH/2 && y < CONFIG.GAME_HEIGHT - 100) validPlacement = true;
@@ -676,7 +769,6 @@ class GameState {
             }
         }
         if (!validPlacement) return false;
-
         if (manager.elixir >= cardDef.cost) {
             manager.elixir -= cardDef.cost;
             manager.cycleCard(cardIndex);
